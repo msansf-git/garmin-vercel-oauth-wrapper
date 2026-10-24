@@ -49,7 +49,10 @@ async function callLocalTool(name, args = {}) {
   if (name === 'garmin_connect_login') {
     const email = process.env.GARMIN_CONNECT_EMAIL?.trim();
     const password = process.env.GARMIN_CONNECT_PASSWORD;
-    if (!email || !password) throw new Error('Set GARMIN_CONNECT_EMAIL and GARMIN_CONNECT_PASSWORD as private deployment environment variables.');
+    if (!email || !password) {
+      const missing = [!email && 'GARMIN_CONNECT_EMAIL', !password && 'GARMIN_CONNECT_PASSWORD'].filter(Boolean);
+      throw new Error(`Missing runtime environment variable(s): ${missing.join(', ')}. Configure them for this deployment's environment and redeploy.`);
+    }
     const result = await client.login(email, password);
     if (result.state === 'mfa_required') {
       pendingMfa = result.mfaState;
