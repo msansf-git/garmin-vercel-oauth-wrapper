@@ -1,6 +1,7 @@
 // OAuth/bearer bridge plus local Garmin Connect performance-metric tools.
 // The Personal API MCP remains upstream; these tools use a separate Garmin Connect web session.
-import { GarminClient, MemoryTokenStore, Garmin } from 'garminconnect-js';
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import { GarminClient, Garmin } from 'garminconnect-js';
 
 function safeEqual(a, b) {
   if (a.length !== b.length) return false;
@@ -9,12 +10,63 @@ function safeEqual(a, b) {
   return diff === 0;
 }
 
-const client = new GarminClient({ tokenStore: new MemoryTokenStore() });
-let pendingMfa = null;
+// Vercel Marketplace's native Upstash integration supplies the REST URL/token.
+// Tokens and MFA state are encrypted before they leave this function.
+const storageScope = process.env.VERCEL_ENV === 'production' ? 'production' :
+  (process.env.VERCEL_ENV === 'preview' ? 'preview' : 'development');
+const tokenKey = `garmin-connect:${storageScope}:tokens:v1`;
+const mfaKey = `garmin-connect:${storageScope}:pending-mfa:v1`;
+
+function encryptionKey() {
+  const secret = process.env.GARMIN_SESSION_ENCRYPTION_KEY;
+  if (!secret || secret.length < 32) throw new Error('GARMIN_SESSION_ENCRYPTION_KEY must be configured as a private Vercel environment variable with at least 32 characters.');
+  return createHash('sha256').update(secret, 'utf8').digest();
+}
+function encryptJson(value) {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', encryptionKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()]);
+  return JSON.stringify({ v: 1, iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: encrypted.toString('base64') });
+}
+function decryptJson(value) {
+  const envelope = JSON.parse(value);
+  if (envelope?.v !== 1 || !envelope.iv || !envelope.tag || !envelope.data) throw new Error('Stored Garmin session has an invalid encrypted envelope.');
+  const decipher = createDecipheriv('aes-256-gcm', encryptionKey(), Buffer.from(envelope.iv, 'base64'));
+  decipher.setAuthTag(Buffer.from(envelope.tag, 'base64'));
+  const plain = Buffer.concat([decipher.update(Buffer.from(envelope.data, 'base64')), decipher.final()]).toString('utf8');
+  return JSON.parse(plain);
+}
+async function redisCommand(...command) {
+  const endpoint = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!endpoint || !token) throw new Error('Persistent session storage is not configured. In Vercel, add the native Upstash Redis storage integration and enable it for this deployment environment.');
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify(command),
+  });
+  if (!response.ok) throw new Error(`Persistent session storage request failed (HTTP ${response.status}).`);
+  const result = await response.json();
+  if (result.error) throw new Error('Persistent session storage returned an error.');
+  return result.result;
+}
+class PersistentTokenStore {
+  async load() {
+    const value = await redisCommand('GET', tokenKey);
+    return value ? decryptJson(value) : null;
+  }
+  async save(tokens) {
+    await redisCommand('SET', tokenKey, encryptJson(tokens));
+  }
+  async clear() {
+    await redisCommand('DEL', tokenKey);
+  }
+}
+const client = new GarminClient({ tokenStore: new PersistentTokenStore() });
 
 const localTools = [
-  { name: 'garmin_connect_login', description: 'Start Garmin Connect sign-in using private GARMIN_CONNECT_EMAIL and GARMIN_CONNECT_PASSWORD deployment secrets. Session and pending MFA state are memory-only and may be lost between serverless requests.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } },
-  { name: 'garmin_connect_verify_mfa', description: 'Complete a pending Garmin Connect sign-in with the one-time verification code. Pending MFA state is memory-only and may be lost between serverless requests.', inputSchema: { type: 'object', properties: { code: { type: 'string', minLength: 4, maxLength: 12 } }, required: ['code'], additionalProperties: false }, annotations: { readOnlyHint: true } },
+  { name: 'garmin_connect_login', description: 'Start Garmin Connect sign-in using private GARMIN_CONNECT_EMAIL and GARMIN_CONNECT_PASSWORD deployment secrets. Encrypted session tokens and pending MFA state are stored persistently for this Vercel environment.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } },
+  { name: 'garmin_connect_verify_mfa', description: 'Complete a pending Garmin Connect sign-in with the one-time verification code. The encrypted pending MFA state is stored persistently for up to 10 minutes.', inputSchema: { type: 'object', properties: { code: { type: 'string', minLength: 4, maxLength: 12 } }, required: ['code'], additionalProperties: false }, annotations: { readOnlyHint: true } },
   { name: 'get_vo2_max', description: 'Get latest available running/cycling VO₂ max, one date, or history for an inclusive date range. Dates are YYYY-MM-DD. Latest searches the most recent 90 days.', inputSchema: dateSchema(), annotations: { readOnlyHint: true } },
   { name: 'get_cycling_ftp', description: 'Get latest cycling FTP, a specific date, or FTP history for an inclusive date range. Dates are YYYY-MM-DD. Range history is daily and cycling-specific.', inputSchema: dateSchema(), annotations: { readOnlyHint: true } },
   { name: 'get_training_status', description: 'Get latest available training status, a specific date, or daily status records for an inclusive date range. Dates are YYYY-MM-DD. Latest searches backwards up to 30 days; ranges are capped at 366 days.', inputSchema: dateSchema(), annotations: { readOnlyHint: true } },
@@ -55,20 +107,21 @@ async function callLocalTool(name, args = {}) {
     }
     const result = await client.login(email, password);
     if (result.state === 'mfa_required') {
-      pendingMfa = result.mfaState;
-      return { status: 'mfa_required', message: 'Garmin requires a verification code. Call garmin_connect_verify_mfa. MFA state is memory-only and may be lost if the serverless instance restarts.' };
+      await redisCommand('SET', mfaKey, encryptJson(result.mfaState), 'EX', '600');
+      return { status: 'mfa_required', message: 'Garmin requires a verification code. Call garmin_connect_verify_mfa within 10 minutes. The pending challenge is encrypted and stored for this Vercel environment.' };
     }
-    pendingMfa = null;
-    return { status: 'authenticated', message: 'Garmin Connect login succeeded. Session tokens are held in process memory only.' };
+    await redisCommand('DEL', mfaKey);
+    return { status: 'authenticated', message: 'Garmin Connect login succeeded. Encrypted session tokens are stored persistently for this Vercel environment.' };
   }
   if (name === 'garmin_connect_verify_mfa') {
     if (typeof args.code !== 'string' || args.code.trim().length < 4 || args.code.trim().length > 12) throw new Error('code must be 4–12 characters.');
-    if (!pendingMfa) throw new Error('No pending Garmin MFA login in this runtime instance. Call garmin_connect_login again.');
-    await client.resumeLogin(pendingMfa, args.code.trim());
-    pendingMfa = null;
-    return { status: 'authenticated', message: 'Garmin MFA verification succeeded. Session tokens are held in process memory only.' };
+    const storedMfa = await redisCommand('GET', mfaKey);
+    if (!storedMfa) throw new Error('No pending Garmin MFA login was found (it may have expired after 10 minutes). Call garmin_connect_login again.');
+    await client.resumeLogin(decryptJson(storedMfa), args.code.trim());
+    await redisCommand('DEL', mfaKey);
+    return { status: 'authenticated', message: 'Garmin MFA verification succeeded. Encrypted session tokens are stored persistently for this Vercel environment.' };
   }
-  if (!(await client.loadTokens())) throw new Error('No in-memory Garmin Connect session. Call garmin_connect_login first. Serverless restarts clear the session; no persistent token storage is configured.');
+  if (!(await client.loadTokens())) throw new Error('No saved Garmin Connect session. Call garmin_connect_login first; if Garmin requires MFA, complete garmin_connect_verify_mfa.');
   const garmin = new Garmin(client);
   const query = validateQuery(args);
   if (name === 'get_vo2_max') {
