@@ -105,7 +105,12 @@ export default async function handler(request) {
   const upstream = process.env.UPSTREAM_URL;
   const token = process.env.MCP_BEARER_TOKEN;
   if (!secret || !upstream || !token) return new Response('Proxy is not configured', { status: 500 });
-  const url = new URL(request.url);
+  // Vercel may expose request.url as a relative path in this function runtime.
+  // Resolve it against the forwarded origin (or Host) before reading query params.
+  const host = request.headers.get('x-forwarded-host') || request.headers.get('host');
+  const protocol = request.headers.get('x-forwarded-proto') || 'https';
+  if (!host) return new Response('Unable to determine request host', { status: 400 });
+  const url = new URL(request.url, `${protocol}://${host}`);
   const given = url.searchParams.get('s') || '';
   if (!safeEqual(given, secret)) return new Response('Not found', { status: 404 });
 
