@@ -123,7 +123,15 @@ async function handleFetch(request) {
     const response = await forwardWithBody(request, upstream, token, rawBody, true);
     if (!response.ok) return response;
     try {
-      const payload = await response.json();
+      const responseText = await response.text();
+      let payload;
+      try {
+        payload = JSON.parse(responseText);
+      } catch {
+        // Some Streamable HTTP servers return the JSON-RPC message in an SSE data event.
+        const dataLine = responseText.split(/\r?\n/).find(line => line.startsWith('data:'));
+        if (dataLine) payload = JSON.parse(dataLine.slice(5).trim());
+      }
       if (payload?.result?.tools) {
         const upstreamTools = payload.result.tools.filter(tool => !localNames.has(tool.name));
         payload.result.tools = [...upstreamTools, ...localTools];
@@ -146,7 +154,11 @@ async function forwardWithBody(request, upstream, token, body, jsonAccept = fals
   const headers = new Headers(request.headers);
   headers.set('authorization', `Bearer ${token}`);
   headers.delete('host');
-  if (jsonAccept) headers.set('accept', 'application/json');
+  // MCP Streamable HTTP servers may require text/event-stream to be accepted,
+  // even when the caller prefers JSON. Accept both response representations.
+  headers.set('accept', jsonAccept
+    ? 'application/json, text/event-stream'
+    : (headers.get('accept') ? `${headers.get('accept')}, text/event-stream` : 'application/json, text/event-stream'));
   const hasBody = !['GET', 'HEAD'].includes(request.method);
   const res = await fetch(upstream, { method: request.method, headers, body: hasBody ? (body === undefined ? request.body : body) : undefined, redirect: 'manual' });
   const outHeaders = new Headers(res.headers);
