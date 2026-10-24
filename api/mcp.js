@@ -107,8 +107,14 @@ export default async function handler(request) {
   if (!secret || !upstream || !token) return new Response('Proxy is not configured', { status: 500 });
   // Vercel may expose request.url as a relative path in this function runtime.
   // Resolve it against the forwarded origin (or Host) before reading query params.
-  const host = request.headers.get('x-forwarded-host') || request.headers.get('host');
-  const protocol = request.headers.get('x-forwarded-proto') || 'https';
+  // Vercel's Node.js function handler receives a Node IncomingMessage,
+  // whose headers are a plain object rather than a Fetch API Headers instance.
+  const header = name => {
+    const value = request.headers?.[name] ?? request.headers?.[name.toLowerCase()];
+    return Array.isArray(value) ? value[0] : value;
+  };
+  const host = header('x-forwarded-host') || header('host');
+  const protocol = header('x-forwarded-proto') || 'https';
   if (!host) return new Response('Unable to determine request host', { status: 400 });
   const url = new URL(request.url, `${protocol}://${host}`);
   const given = url.searchParams.get('s') || '';
