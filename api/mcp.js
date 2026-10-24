@@ -69,7 +69,7 @@ export class PersistentTokenStore {
     await redisCommand('DEL', tokenKey);
   }
 }
-const client = new GarminClient({ tokenStore: new PersistentTokenStore() });
+export const client = new GarminClient({ tokenStore: new PersistentTokenStore() });
 
 export const localTools = [
   { name: 'garmin_connect_login', description: 'Start Garmin Connect sign-in using private Vercel environment secrets. If MFA is required, tell the user to provide the one-time code they received, then call garmin_connect_verify_mfa. Never ask for or pass the Garmin password as a tool argument.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } },
