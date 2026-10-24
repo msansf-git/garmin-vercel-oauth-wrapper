@@ -174,14 +174,23 @@ export default async function handler(req, res) {
       const value = req.headers?.[name] ?? req.headers?.[name.toLowerCase()];
       return Array.isArray(value) ? value[0] : value;
     };
-    const host = header('x-forwarded-host') || header('host');
+    // Some Vercel Node runtimes omit Host/forwarded-host on the request;
+    // use Vercel's deployment hostname as a safe fallback for relative URLs.
+    const host = header('x-forwarded-host') || header('host') ||
+      process.env.VERCEL_URL || process.env.VERCEL_BRANCH_URL ||
+      process.env.VERCEL_PROJECT_PRODUCTION_URL;
     const protocol = header('x-forwarded-proto') || 'https';
-    if (!host) {
-      res.statusCode = 400;
-      res.end('Unable to determine request host');
-      return;
+    let url;
+    try {
+      url = new URL(req.url || '/');
+    } catch {
+      if (!host) {
+        res.statusCode = 400;
+        res.end('Unable to determine request host; configure VERCEL_URL or send a Host header.');
+        return;
+      }
+      url = new URL(req.url || '/', `${protocol}://${host}`);
     }
-    const url = new URL(req.url || '/', `${protocol}://${host}`);
     const headers = new Headers();
     for (const [name, value] of Object.entries(req.headers || {})) {
       if (Array.isArray(value)) value.forEach(v => headers.append(name, v));
