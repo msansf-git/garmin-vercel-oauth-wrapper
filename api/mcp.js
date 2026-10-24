@@ -100,7 +100,7 @@ function rpcError(id, message) {
   return Response.json({ jsonrpc: '2.0', id, error: { code: -32000, message } }, { status: 200 });
 }
 
-export default async function handler(request) {
+async function handleFetch(request) {
   const secret = process.env.URL_SECRET;
   const upstream = process.env.UPSTREAM_URL;
   const token = process.env.MCP_BEARER_TOKEN;
@@ -162,4 +162,49 @@ async function forwardWithBody(request, upstream, token, body, jsonAccept = fals
   outHeaders.delete('content-encoding');
   outHeaders.delete('content-length');
   return new Response(res.body, { status: res.status, headers: outHeaders });
+}
+
+
+// Vercel Node.js Functions use (req, res), not a Fetch-style default export.
+// Adapt the incoming Node request to a Web Request and write the Web Response
+// explicitly so Vercel does not ignore the returned response.
+export default async function handler(req, res) {
+  try {
+    const header = name => {
+      const value = req.headers?.[name] ?? req.headers?.[name.toLowerCase()];
+      return Array.isArray(value) ? value[0] : value;
+    };
+    const host = header('x-forwarded-host') || header('host');
+    const protocol = header('x-forwarded-proto') || 'https';
+    if (!host) {
+      res.statusCode = 400;
+      res.end('Unable to determine request host');
+      return;
+    }
+    const url = new URL(req.url || '/', `${protocol}://${host}`);
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(req.headers || {})) {
+      if (Array.isArray(value)) value.forEach(v => headers.append(name, v));
+      else if (value !== undefined) headers.set(name, String(value));
+    }
+    let body;
+    if (!['GET', 'HEAD'].includes(req.method || 'GET')) {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      body = Buffer.concat(chunks);
+    }
+    const request = new Request(url, {
+      method: req.method || 'GET',
+      headers,
+      ...(body === undefined ? {} : { body }),
+    });
+    const response = await handleFetch(request);
+    res.statusCode = response.status;
+    response.headers.forEach((value, name) => res.setHeader(name, value));
+    res.end(Buffer.from(await response.arrayBuffer()));
+  } catch (error) {
+    console.error('MCP proxy handler failed:', error);
+    if (!res.headersSent) res.statusCode = 500;
+    res.end('Internal Server Error');
+  }
 }
