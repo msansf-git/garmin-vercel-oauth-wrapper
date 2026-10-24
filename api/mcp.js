@@ -18,7 +18,7 @@ const storageScope = process.env.VERCEL_ENV === 'production' ? 'production' :
 const tokenKey = `garmin-connect:${storageScope}:tokens:v1`;
 const mfaKey = `garmin-connect:${storageScope}:pending-mfa:v1`;
 
-function encryptionKey() {
+export function encryptionKey() {
   const secret = process.env.GARMIN_SESSION_ENCRYPTION_KEY;
   if (!secret || secret.length < 32) throw new Error('GARMIN_SESSION_ENCRYPTION_KEY must be configured as a private Vercel environment variable with at least 32 characters.');
   return createHash('sha256').update(secret, 'utf8').digest();
@@ -29,13 +29,13 @@ function assertPersistentStoreConfigured() {
   }
   encryptionKey();
 }
-function encryptJson(value) {
+export function encryptJson(value) {
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', encryptionKey(), iv);
   const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()]);
   return JSON.stringify({ v: 1, iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: encrypted.toString('base64') });
 }
-function decryptJson(value) {
+export function decryptJson(value) {
   const envelope = JSON.parse(value);
   if (envelope?.v !== 1 || !envelope.iv || !envelope.tag || !envelope.data) throw new Error('Stored Garmin session has an invalid encrypted envelope.');
   const decipher = createDecipheriv('aes-256-gcm', encryptionKey(), Buffer.from(envelope.iv, 'base64'));
@@ -57,7 +57,7 @@ async function redisCommand(...command) {
   if (result.error) throw new Error('Persistent session storage returned an error.');
   return result.result;
 }
-class PersistentTokenStore {
+export class PersistentTokenStore {
   async load() {
     const value = await redisCommand('GET', tokenKey);
     return value ? decryptJson(value) : null;
@@ -71,9 +71,9 @@ class PersistentTokenStore {
 }
 const client = new GarminClient({ tokenStore: new PersistentTokenStore() });
 
-const localTools = [
-  { name: 'garmin_connect_login', description: 'Start Garmin Connect sign-in using private GARMIN_CONNECT_EMAIL and GARMIN_CONNECT_PASSWORD deployment secrets. Encrypted session tokens and pending MFA state are stored persistently for this Vercel environment.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } },
-  { name: 'garmin_connect_verify_mfa', description: 'Complete a pending Garmin Connect sign-in with the one-time verification code. The encrypted pending MFA state is stored persistently for up to 10 minutes.', inputSchema: { type: 'object', properties: { code: { type: 'string', minLength: 4, maxLength: 12 } }, required: ['code'], additionalProperties: false }, annotations: { readOnlyHint: true } },
+export const localTools = [
+  { name: 'garmin_connect_login', description: 'Start Garmin Connect sign-in using private Vercel environment secrets. If MFA is required, tell the user to provide the one-time code they received, then call garmin_connect_verify_mfa. Never ask for or pass the Garmin password as a tool argument.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } },
+  { name: 'garmin_connect_verify_mfa', description: 'Complete a pending Garmin Connect sign-in using the one-time code the user supplies after you ask them for it. The code is not stored; encrypted pending MFA state is stored for up to 10 minutes.', inputSchema: { type: 'object', properties: { code: { type: 'string', minLength: 4, maxLength: 12 } }, required: ['code'], additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } },
   { name: 'get_vo2_max', description: 'Get latest available running/cycling VO₂ max, one date, or history for an inclusive date range. Dates are YYYY-MM-DD. Latest searches the most recent 90 days.', inputSchema: dateSchema(), annotations: { readOnlyHint: true } },
   { name: 'get_cycling_ftp', description: 'Get latest cycling FTP, a specific date, or FTP history for an inclusive date range. Dates are YYYY-MM-DD. Range history is daily and cycling-specific.', inputSchema: dateSchema(), annotations: { readOnlyHint: true } },
   { name: 'get_training_status', description: 'Get latest available training status, a specific date, or daily status records for an inclusive date range. Dates are YYYY-MM-DD. Latest searches backwards up to 30 days; ranges are capped at 366 days.', inputSchema: dateSchema(), annotations: { readOnlyHint: true } },
@@ -87,7 +87,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 const dateString = d => d.toISOString().slice(0, 10);
 function shiftDate(value, days) { const d = new Date(value + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + days); return dateString(d); }
 function isRealDate(value) { if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false; const d = new Date(value + 'T00:00:00Z'); return Number.isFinite(d.getTime()) && dateString(d) === value; }
-function validateQuery(args = {}) {
+export function validateQuery(args = {}) {
   const { date, from_date, to_date } = args;
   if (date && (from_date || to_date)) throw new Error('Use either date or from_date/to_date, not both.');
   if (date) { if (!isRealDate(date)) throw new Error('date must be a real calendar date in YYYY-MM-DD format.'); return { kind: 'date', date }; }
@@ -164,6 +164,31 @@ function rpcError(id, message) {
   return Response.json({ jsonrpc: '2.0', id, error: { code: -32000, message } }, { status: 200 });
 }
 
+// Parse either a JSON response or a Streamable HTTP SSE response. SSE event data
+// may span multiple data: lines; combine those lines before parsing JSON.
+export function parseJsonRpcResponse(responseText) {
+  try { return JSON.parse(responseText); } catch { /* try SSE below */ }
+  for (const event of responseText.split(/\\r?\\n\\r?\\n/)) {
+    const data = event.split(/\\r?\\n/).filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).replace(/^ /, ''));
+    if (!data.length) continue;
+    try { return JSON.parse(data.join('\\n')); } catch { /* try the next event */ }
+  }
+  return null;
+}
+
+export function mergeToolListResponse(payload, upstreamResponse, tools = localTools, names = localNames) {
+  if (!Array.isArray(payload?.result?.tools)) return null;
+  const upstreamTools = payload.result.tools.filter(tool => !names.has(tool.name));
+  payload.result.tools = [...upstreamTools, ...tools];
+  const headers = new Headers(upstreamResponse.headers);
+  headers.set('content-type', 'application/json; charset=utf-8');
+  headers.delete('content-length');
+  headers.delete('content-encoding');
+  headers.delete('transfer-encoding');
+  return Response.json(payload, { status: upstreamResponse.status, headers });
+}
+
 async function handleFetch(request) {
   const secret = process.env.URL_SECRET;
   const upstream = process.env.UPSTREAM_URL;
@@ -188,19 +213,9 @@ async function handleFetch(request) {
     if (!response.ok) return response;
     try {
       const responseText = await response.text();
-      let payload;
-      try {
-        payload = JSON.parse(responseText);
-      } catch {
-        // Some Streamable HTTP servers return the JSON-RPC message in an SSE data event.
-        const dataLine = responseText.split(/\r?\n/).find(line => line.startsWith('data:'));
-        if (dataLine) payload = JSON.parse(dataLine.slice(5).trim());
-      }
-      if (payload?.result?.tools) {
-        const upstreamTools = payload.result.tools.filter(tool => !localNames.has(tool.name));
-        payload.result.tools = [...upstreamTools, ...localTools];
-        return Response.json(payload, { status: response.status, headers: response.headers });
-      }
+      const payload = parseJsonRpcResponse(responseText);
+      const merged = payload && mergeToolListResponse(payload, response, localTools, localNames);
+      if (merged) return merged;
     } catch { /* keep upstream response if it wasn't JSON */ }
     return new Response('Unable to merge MCP tool list; upstream did not return JSON.', { status: 502 });
   }
