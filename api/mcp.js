@@ -27,7 +27,7 @@ const localNames = new Set(localTools.map(t => t.name));
 const today = () => new Date().toISOString().slice(0, 10);
 const dateString = d => d.toISOString().slice(0, 10);
 function shiftDate(value, days) { const d = new Date(value + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + days); return dateString(d); }
-function isRealDate(value) { if (typeof value !== 'string' || !/^\\d{4}-\\d{2}-\\d{2}$/.test(value)) return false; const d = new Date(value + 'T00:00:00Z'); return Number.isFinite(d.getTime()) && dateString(d) === value; }
+function isRealDate(value) { if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false; const d = new Date(value + 'T00:00:00Z'); return Number.isFinite(d.getTime()) && dateString(d) === value; }
 function validateQuery(args = {}) {
   const { date, from_date, to_date } = args;
   if (date && (from_date || to_date)) throw new Error('Use either date or from_date/to_date, not both.');
