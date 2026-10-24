@@ -1,7 +1,5 @@
 // OAuth/bearer bridge plus local Garmin Connect performance-metric tools.
 // The Personal API MCP remains upstream; these tools use a separate Garmin Connect web session.
-export const config = { runtime: 'nodejs20.x' };
-
 import { GarminClient, MemoryTokenStore, Garmin } from 'garminconnect-js';
 
 function safeEqual(a, b) {
