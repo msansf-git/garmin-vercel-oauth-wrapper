@@ -23,7 +23,7 @@ function encryptionKey() {
   return createHash('sha256').update(secret, 'utf8').digest();
 }
 function assertPersistentStoreConfigured() {
-  if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
+  if (!(process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL) || !(process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN)) {
     throw new Error('Persistent session storage is not configured. Add the Vercel-managed Upstash Redis integration and enable it for this deployment environment.');
   }
   encryptionKey();
@@ -43,8 +43,8 @@ function decryptJson(value) {
   return JSON.parse(plain);
 }
 async function redisCommand(...command) {
-  const endpoint = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  const endpoint = (process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL);
+  const token = (process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN);
   if (!endpoint || !token) throw new Error('Persistent session storage is not configured. In Vercel, add the native Upstash Redis storage integration and enable it for this deployment environment.');
   const response = await fetch(endpoint, {
     method: 'POST',
