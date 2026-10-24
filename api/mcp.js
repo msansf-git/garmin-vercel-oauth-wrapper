@@ -105,18 +105,9 @@ async function handleFetch(request) {
   const upstream = process.env.UPSTREAM_URL;
   const token = process.env.MCP_BEARER_TOKEN;
   if (!secret || !upstream || !token) return new Response('Proxy is not configured', { status: 500 });
-  // Vercel may expose request.url as a relative path in this function runtime.
-  // Resolve it against the forwarded origin (or Host) before reading query params.
-  // Vercel's Node.js function handler receives a Node IncomingMessage,
-  // whose headers are a plain object rather than a Fetch API Headers instance.
-  const header = name => {
-    const value = request.headers?.[name] ?? request.headers?.[name.toLowerCase()];
-    return Array.isArray(value) ? value[0] : value;
-  };
-  const host = header('x-forwarded-host') || header('host');
-  const protocol = header('x-forwarded-proto') || 'https';
-  if (!host) return new Response('Unable to determine request host', { status: 400 });
-  const url = new URL(request.url, `${protocol}://${host}`);
+  // The Node.js adapter below always constructs an absolute Web Request URL.
+  // Use that URL directly; Host headers are not guaranteed to be forwarded by Vercel.
+  const url = new URL(request.url);
   const given = url.searchParams.get('s') || '';
   if (!safeEqual(given, secret)) return new Response('Not found', { status: 404 });
 
