@@ -12,6 +12,7 @@ function safeEqual(a, b) {
 
 // Vercel Marketplace's native Upstash integration supplies the REST URL/token.
 // Tokens and MFA state are encrypted before they leave this function.
+// Preview and production sessions use separate persistent Redis keys.
 const storageScope = process.env.VERCEL_ENV === 'production' ? 'production' :
   (process.env.VERCEL_ENV === 'preview' ? 'preview' : 'development');
 const tokenKey = `garmin-connect:${storageScope}:tokens:v1`;
