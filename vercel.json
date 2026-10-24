@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/:secret/mcp", "destination": "/api/mcp?s=:secret" }
+  ]
+}
