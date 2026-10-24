@@ -22,6 +22,12 @@ function encryptionKey() {
   if (!secret || secret.length < 32) throw new Error('GARMIN_SESSION_ENCRYPTION_KEY must be configured as a private Vercel environment variable with at least 32 characters.');
   return createHash('sha256').update(secret, 'utf8').digest();
 }
+function assertPersistentStoreConfigured() {
+  if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
+    throw new Error('Persistent session storage is not configured. Add the Vercel-managed Upstash Redis integration and enable it for this deployment environment.');
+  }
+  encryptionKey();
+}
 function encryptJson(value) {
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', encryptionKey(), iv);
@@ -99,6 +105,7 @@ function toolResult(id, data, isError = false) {
 }
 async function callLocalTool(name, args = {}) {
   if (name === 'garmin_connect_login') {
+    assertPersistentStoreConfigured();
     const email = process.env.GARMIN_CONNECT_EMAIL?.trim();
     const password = process.env.GARMIN_CONNECT_PASSWORD;
     if (!email || !password) {
