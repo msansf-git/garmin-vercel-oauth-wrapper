@@ -104,7 +104,7 @@ export function validateQuery(args = {}) {
 function toolResult(id, data, isError = false) {
   return Response.json({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: typeof data === 'string' ? data : JSON.stringify(data, null, 2) }], ...(isError ? { isError: true } : {}) } });
 }
-async function callLocalTool(name, args = {}) {
+export async function callLocalTool(name, args = {}) {
   if (name === 'garmin_connect_login') {
     assertPersistentStoreConfigured();
     const email = process.env.GARMIN_CONNECT_EMAIL?.trim();
@@ -168,11 +168,11 @@ function rpcError(id, message) {
 // may span multiple data: lines; combine those lines before parsing JSON.
 export function parseJsonRpcResponse(responseText) {
   try { return JSON.parse(responseText); } catch { /* try SSE below */ }
-  for (const event of responseText.split(/\\r?\\n\\r?\\n/)) {
-    const data = event.split(/\\r?\\n/).filter(line => line.startsWith('data:'))
+  for (const event of responseText.split(/\r?\n\r?\n/)) {
+    const data = event.split(/\r?\n/).filter(line => line.startsWith('data:'))
       .map(line => line.slice(5).replace(/^ /, ''));
     if (!data.length) continue;
-    try { return JSON.parse(data.join('\\n')); } catch { /* try the next event */ }
+    try { return JSON.parse(data.join('\n')); } catch { /* try the next event */ }
   }
   return null;
 }
@@ -189,7 +189,7 @@ export function mergeToolListResponse(payload, upstreamResponse, tools = localTo
   return Response.json(payload, { status: upstreamResponse.status, headers });
 }
 
-async function handleFetch(request) {
+export async function handleFetch(request) {
   const secret = process.env.URL_SECRET;
   const upstream = process.env.UPSTREAM_URL;
   const token = process.env.MCP_BEARER_TOKEN;
