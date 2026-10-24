@@ -1,5 +1,12 @@
 {
   "name": "garmin-mcp-proxy",
   "private": true,
-  "version": "1.0.0"
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "garminconnect-js": "^0.10.0"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
 }
